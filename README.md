@@ -29,7 +29,7 @@ python3 -m pip install eclipse-zenoh
 进入项目目录：
 
 ```bash
-cd /Users/aksea/Project/Linux/RK3588/web_dashboard
+cd web_dashboard
 ```
 
 启动服务：
