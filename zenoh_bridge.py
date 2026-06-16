@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--registry-key", default="zho/entity/registry")
     parser.add_argument("--mediapipe-key", default="halmet/mediapipe")
+    parser.add_argument("--ring-key", default="actor/ring/intent")
     parser.add_argument("--yolo-key", default="halmet/yolo")
     parser.add_argument("--mode", default="peer", choices=("peer", "client", "router"))
     parser.add_argument("--connect", action="append", default=[])
@@ -96,6 +97,7 @@ def main() -> int:
     subscribers = [
         session.declare_subscriber(args.registry_key, lambda sample: emit("registry", sample)),
         session.declare_subscriber(args.mediapipe_key, lambda sample: emit("mediapipe", sample)),
+        session.declare_subscriber(args.ring_key, lambda sample: emit("ring", sample)),
         session.declare_subscriber(args.yolo_key, lambda sample: emit("yolo", sample)),
     ]
     emit_status("online")

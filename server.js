@@ -17,6 +17,7 @@ const MIME = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
   ".svg": "image/svg+xml",
 };
 
@@ -30,6 +31,7 @@ function parseArgs(argv) {
     rtspUrlOverridden: false,
     registryKey: "zho/entity/registry",
     mediapipeKey: "halmet/mediapipe",
+    ringKey: "actor/ring/intent",
     yoloKey: "halmet/yolo",
     zenohMode: "router",
     connect: [],
@@ -55,6 +57,7 @@ function parseArgs(argv) {
     }
     else if (arg === "--registry-key") args.registryKey = next();
     else if (arg === "--mediapipe-key") args.mediapipeKey = next();
+    else if (arg === "--ring-key") args.ringKey = next();
     else if (arg === "--yolo-key") args.yoloKey = next();
     else if (arg === "--zenoh-mode") args.zenohMode = next();
     else if (arg === "--connect") args.connect.push(next());
@@ -95,6 +98,7 @@ Options:
   --listen tcp/0.0.0.0:7447        Zenoh listen endpoint, default: tcp/0.0.0.0:7447
   --registry-key zho/entity/registry
   --mediapipe-key halmet/mediapipe
+  --ring-key actor/ring/intent
   --yolo-key halmet/yolo
   --camera-labels 面部视角,第一视角,躯干视角,环境视角
   --no-zenoh                       Run UI without Zenoh subscription
@@ -132,6 +136,8 @@ function emptyState(args) {
       camera_id: "",
       pts_ns: null,
     },
+    hand: null,
+    ring: null,
     raw: {
       mediapipe: null,
       yolo: null,
@@ -257,7 +263,32 @@ function applyMediapipe(dashboard, key, payload) {
     };
     state.recognition.camera_id = payload.camera_id ?? state.recognition.camera_id;
     state.recognition.pts_ns = payload.pts_ns ?? state.recognition.pts_ns;
+    state.hand = primaryHand
+      ? {
+          camera_id: payload.camera_id ?? "",
+          hand_id: primaryHand.id ?? primaryHand.hand_id ?? 0,
+          gesture,
+          landmarks: Array.isArray(primaryHand.landmarks) ? primaryHand.landmarks : [],
+          source_width: Number(payload.frame_width ?? payload.width ?? primaryHand.source_width ?? 640),
+          source_height: Number(payload.frame_height ?? payload.height ?? primaryHand.source_height ?? 360),
+          pts_ns: payload.pts_ns ?? null,
+          updated_at: nowText(),
+        }
+      : null;
     state.raw.mediapipe = payload;
+    state.raw.last_message = { key, payload, received_at: nowText() };
+  });
+}
+
+function applyRingIntent(dashboard, key, payload) {
+  dashboard.update((state) => {
+    const seq = (state.ring?.seq ?? 0) + 1;
+    state.ring = {
+      seq,
+      result: firstText(payload.result, payload.intent, payload.action),
+      payload,
+      updated_at: nowText(),
+    };
     state.raw.last_message = { key, payload, received_at: nowText() };
   });
 }
@@ -342,6 +373,7 @@ function startZenohBridge(args, dashboard) {
     "--mode", args.zenohMode,
     "--registry-key", args.registryKey,
     "--mediapipe-key", args.mediapipeKey,
+    "--ring-key", args.ringKey,
     "--yolo-key", args.yoloKey,
   ];
   for (const endpoint of args.connect) bridgeArgs.push("--connect", endpoint);
@@ -377,6 +409,7 @@ function startZenohBridge(args, dashboard) {
           });
         } else if (message.kind === "registry") applyRegistry(dashboard, message.key, message.payload);
         else if (message.kind === "mediapipe") applyMediapipe(dashboard, message.key, message.payload);
+        else if (message.kind === "ring") applyRingIntent(dashboard, message.key, message.payload);
         else if (message.kind === "yolo") applyYolo(dashboard, message.key, message.payload);
         else applyGenericResult(dashboard, message.key, message.payload);
       } catch (error) {
@@ -604,6 +637,7 @@ server.listen(args.port, args.host, () => {
   console.log(`dashboard: http://${args.host}:${args.port}/`);
   console.log(`registry:  ${args.registryKey}`);
   console.log(`mediapipe: ${args.mediapipeKey}`);
+  console.log(`ring:      ${args.ringKey}`);
   console.log(`yolo:      ${args.yoloKey}`);
   if (args.rtspUrl) console.log(`rtsp:      ${args.rtspUrl}`);
 });

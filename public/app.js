@@ -1,116 +1,174 @@
 const $ = (id) => document.getElementById(id);
 
 const fields = {
-  clock: $("clock"),
-  zenohDot: $("zenoh-dot"),
-  zenohStatus: $("zenoh-status"),
-  registryPill: $("registry-pill"),
-  behavior: $("behavior"),
-  environment: $("environment"),
-  intent: $("intent"),
-  entity: $("entity"),
-  owner: $("owner"),
+  cursorSurface: $("cursor-surface"),
+  cursorTarget: $("cursor-target"),
+  tapMarker: $("tap-marker"),
+  armStatus: $("arm-status"),
+  armWord: $("arm-word"),
+  heightStage: document.querySelector(".height-stage"),
+  heightColumn: $("height-column"),
   video: $("video"),
-  videoPill: $("video-pill"),
   videoEmpty: $("video-empty"),
   videoUrl: $("video-url"),
-  cameraLabels: $("camera-labels"),
 };
 
-let renderedCameraLabels = "";
+const state = {
+  lastSeen: 0,
+  lastHandToken: "",
+  lastRingSeq: 0,
+  lastGesture: "",
+  cursor: {
+    initialized: false,
+    lastIndex: null,
+    x: 0.5,
+    y: 0.5,
+  },
+  height: {
+    value: 0.15,
+    direction: 0,
+    lastTick: performance.now(),
+  },
+};
 
-function text(value, fallback = "-") {
-  return value === undefined || value === null || value === "" ? fallback : String(value);
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
-function statusText(value) {
-  const map = {
-    online: "在线",
-    starting: "启动中",
-    waiting: "等待",
-    connecting: "连接中",
-    disabled: "已禁用",
-    offline: "离线",
+function setArmState(direction) {
+  state.height.direction = direction;
+  const label = direction > 0 ? "上" : direction < 0 ? "下" : "停";
+  fields.armWord.textContent = label;
+  fields.armStatus.classList.toggle("up", direction > 0);
+  fields.armStatus.classList.toggle("down", direction < 0);
+}
+
+function updateCursor(points, width, height, gesture) {
+  const indexTip = points[8];
+  const active = gesture === "pointing";
+  if (!active) {
+    state.cursor.lastIndex = null;
+    return;
+  }
+
+  const gain = 5.0;
+  const current = {
+    x: clamp(Number(indexTip[0]) / width, 0, 1),
+    y: clamp(Number(indexTip[1]) / height, 0, 1),
   };
-  return map[value] ?? text(value, "未知");
+  if (!state.cursor.initialized) {
+    state.cursor.x = 0.5;
+    state.cursor.y = 0.5;
+    state.cursor.initialized = true;
+  }
+  if (state.cursor.lastIndex) {
+    state.cursor.x = clamp(state.cursor.x + (current.x - state.cursor.lastIndex.x) * gain, 0, 1);
+    state.cursor.y = clamp(state.cursor.y + (current.y - state.cursor.lastIndex.y) * gain, 0, 1);
+  }
+  state.cursor.lastIndex = current;
+
+  const bounds = fields.cursorSurface.getBoundingClientRect();
+  fields.cursorTarget.style.left = `${state.cursor.x * bounds.width}px`;
+  fields.cursorTarget.style.top = `${state.cursor.y * bounds.height}px`;
 }
 
-function setPill(element, label, variant) {
-  element.textContent = label;
-  element.className = `pill ${variant ?? ""}`.trim();
+function placeTapMarker() {
+  const bounds = fields.cursorSurface.getBoundingClientRect();
+  fields.tapMarker.style.left = `${state.cursor.x * bounds.width}px`;
+  fields.tapMarker.style.top = `${state.cursor.y * bounds.height}px`;
+  fields.tapMarker.classList.remove("visible");
+  void fields.tapMarker.offsetWidth;
+  fields.tapMarker.classList.add("visible");
 }
 
-function renderCameraLabels(labels = []) {
-  const nextLabels = labels.slice(0, 4);
-  const key = JSON.stringify(nextLabels);
-  if (key === renderedCameraLabels) return;
-  renderedCameraLabels = key;
-  fields.cameraLabels.replaceChildren(
-    ...nextLabels.map((label, index) => {
-      const item = document.createElement("span");
-      item.className = `camera-label label-${index + 1}`;
-      item.textContent = text(label, `画面 ${index + 1}`);
-      return item;
-    }),
-  );
+function updateArm(gesture) {
+  if (gesture === "pinch-in") setArmState(-1);
+  else if (gesture === "pinch-out") setArmState(1);
+  else setArmState(0);
 }
 
-function positionCameraLabels() {
-  const frame = fields.video.parentElement;
-  const frameWidth = frame.clientWidth;
-  const frameHeight = frame.clientHeight;
-  let left = 0;
-  let top = 0;
-  let width = frameWidth;
-  let height = frameHeight;
+function renderHand(hand) {
+  const points = hand?.landmarks || [];
+  if (points.length < 21) return;
 
-  if (fields.video.naturalWidth > 0 && fields.video.naturalHeight > 0 && frameWidth > 0 && frameHeight > 0) {
-    const imageRatio = fields.video.naturalWidth / fields.video.naturalHeight;
-    const frameRatio = frameWidth / frameHeight;
-    if (frameRatio > imageRatio) {
-      width = frameWidth;
-      height = width / imageRatio;
-      top = (frameHeight - height) / 2;
-    } else {
-      height = frameHeight;
-      width = height * imageRatio;
-      left = (frameWidth - width) / 2;
+  const width = Math.max(Number(hand.source_width || 640), 1);
+  const height = Math.max(Number(hand.source_height || 360), 1);
+  const gesture = hand.gesture || "";
+
+  updateCursor(points, width, height, gesture);
+  updateArm(gesture);
+  if (gesture === "ok" && state.lastGesture !== "ok") {
+    placeTapMarker();
+  }
+  state.lastGesture = gesture;
+  state.lastSeen = Date.now();
+}
+
+function handToken(hand) {
+  if (hand?.pts_ns !== undefined && hand?.pts_ns !== null) return `pts:${hand.pts_ns}`;
+  const indexTip = hand?.landmarks?.[8] || [];
+  return [
+    hand?.updated_at || "",
+    hand?.gesture || "",
+    Number(indexTip[0]).toFixed(3),
+    Number(indexTip[1]).toFixed(3),
+  ].join("|");
+}
+
+function renderHeight(deltaMs) {
+  const speedPerSecond = 0.24;
+  if (state.height.direction !== 0) {
+    state.height.value = clamp(
+      state.height.value + state.height.direction * speedPerSecond * (deltaMs / 1000),
+      0,
+      1,
+    );
+  }
+  const stageHeight = Math.max(fields.heightStage.getBoundingClientRect().height, 80);
+  const columnHeight = 36 + state.height.value * Math.max(stageHeight - 96, 1);
+  fields.heightColumn.style.height = `${columnHeight}px`;
+}
+
+function renderVideo(videoState) {
+  const status = videoState?.status ?? "waiting";
+  fields.videoEmpty.classList.toggle("hidden", status === "online");
+  fields.videoUrl.textContent = videoState?.rtsp_url || "等待 RTSP 地址";
+}
+
+function primaryHandFrom(rawMediapipe) {
+  const hands = Array.isArray(rawMediapipe?.hands) ? rawMediapipe.hands : [];
+  return hands.find((hand) => Number(hand.id ?? hand.hand_id) === 0) ?? hands[0] ?? null;
+}
+
+function render(snapshot) {
+  const hand = snapshot.hand ?? primaryHandFrom(snapshot.raw?.mediapipe);
+  if (hand) {
+    const token = handToken(hand);
+    if (token !== state.lastHandToken) {
+      state.lastHandToken = token;
+      renderHand(hand);
     }
   }
 
-  fields.cameraLabels.style.left = `${left}px`;
-  fields.cameraLabels.style.top = `${top}px`;
-  fields.cameraLabels.style.width = `${width}px`;
-  fields.cameraLabels.style.height = `${height}px`;
+  const ring = snapshot.ring;
+  if (ring?.result === "tap" && ring.seq !== state.lastRingSeq) {
+    state.lastRingSeq = ring.seq;
+    placeTapMarker();
+  }
+
+  renderVideo(snapshot.video);
 }
 
-function render(state) {
-  const zenohOnline = state.connection?.zenoh === "online" || state.connection?.zenoh === "disabled";
-  fields.zenohDot.classList.toggle("online", zenohOnline);
-  fields.zenohStatus.textContent = `Zenoh ${statusText(state.connection?.zenoh)}`;
+function animate() {
+  const now = performance.now();
+  const deltaMs = Math.min(now - state.height.lastTick, 100);
+  state.height.lastTick = now;
 
-  const registered = Boolean(state.registry?.registered);
-  setPill(fields.registryPill, registered ? "已注册" : "未注册", registered ? "good" : "bad");
-
-  fields.behavior.textContent = text(state.recognition?.behavior?.label, "等待数据");
-  fields.environment.textContent = text(state.recognition?.environment?.label, "等待数据");
-  fields.intent.textContent = text(state.recognition?.intent?.label, "等待判断");
-
-  const entityName = text(state.registry?.display_name, state.registry?.entity_id ? state.registry.entity_id : "-");
-  fields.entity.textContent = entityName;
-  fields.owner.textContent = text(state.registry?.metadata?.owner);
-
-  const videoStatus = state.video?.status ?? "waiting";
-  const videoOnline = videoStatus === "online";
-  setPill(fields.videoPill, statusText(videoStatus), videoOnline ? "good" : videoStatus === "offline" ? "bad" : "");
-  fields.videoEmpty.classList.toggle("hidden", videoOnline);
-  fields.videoUrl.textContent = text(state.video?.rtsp_url, "可通过注册信息或 --rtsp-url 提供");
-  renderCameraLabels(videoOnline ? state.video?.camera_labels : []);
-  requestAnimationFrame(positionCameraLabels);
-}
-
-function tickClock() {
-  fields.clock.textContent = new Date().toLocaleString("zh-CN", { hour12: false });
+  if (state.lastSeen && Date.now() - state.lastSeen >= 1500) {
+    setArmState(0);
+  }
+  renderHeight(deltaMs);
+  requestAnimationFrame(animate);
 }
 
 async function loadInitialState() {
@@ -121,15 +179,13 @@ async function loadInitialState() {
 function connectEvents() {
   const events = new EventSource("/events");
   events.onmessage = (event) => render(JSON.parse(event.data));
-  events.onerror = () => {
-    fields.zenohDot.classList.remove("online");
-    fields.zenohStatus.textContent = "服务重连中";
-  };
 }
 
-tickClock();
-setInterval(tickClock, 1000);
-new ResizeObserver(positionCameraLabels).observe(fields.video.parentElement);
-fields.video.addEventListener("load", positionCameraLabels);
+fields.video.addEventListener("error", () => {
+  fields.videoEmpty.classList.remove("hidden");
+});
+
+setArmState(0);
 loadInitialState().catch(console.error);
 connectEvents();
+animate();

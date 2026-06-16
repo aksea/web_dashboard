@@ -3,66 +3,36 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>人的意图行为展示</title>
+  <title>Cursor Arm Dashboard</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar">
-      <div>
-        <h1>课题一：人的意图行为展示区</h1>
+  <main class="dashboard">
+    <section class="cursor-panel" aria-label="cursor control">
+      <div id="cursor-surface" class="cursor-surface">
+        <div class="cursor-crosshair"></div>
+        <div id="tap-marker" class="tap-marker"></div>
+        <div id="cursor-target" class="cursor-target"></div>
       </div>
-      <div class="status-panel">
-        <div class="status-row">
-          <span class="status-dot" id="zenoh-dot"></span>
-          <span id="zenoh-status">Zenoh 启动中</span>
-        </div>
-        <time id="clock">--:--:--</time>
-      </div>
-    </header>
-
-    <section class="content-grid">
-      <aside class="card data-card">
-        <div class="card-title">
-          <h2>数据呈现</h2>
-          <span class="pill" id="registry-pill">未注册</span>
-        </div>
-
-        <div class="metric">
-          <span class="label">行为</span>
-          <strong id="behavior">等待数据</strong>
-        </div>
-        <div class="metric">
-          <span class="label">环境</span>
-          <strong id="environment">等待数据</strong>
-        </div>
-        <div class="metric">
-          <span class="label">意图</span>
-          <strong id="intent">等待判断</strong>
-        </div>
-
-        <dl class="details">
-          <div><dt>设备</dt><dd id="entity">-</dd></div>
-          <div><dt>Owner</dt><dd id="owner">-</dd></div>
-        </dl>
-      </aside>
-
-      <section class="card video-card">
-        <div class="card-title">
-          <h2>视频画面</h2>
-          <span class="pill" id="video-pill">等待视频</span>
-        </div>
-        <div class="video-frame">
-          <img id="video" alt="视频画面" src="/video.mjpeg">
-          <div class="camera-labels" id="camera-labels" aria-hidden="true"></div>
-          <div class="video-empty" id="video-empty">
-            <strong>等待视频画面</strong>
-            <span id="video-url">可通过注册信息或 --rtsp-url 提供</span>
-          </div>
-        </div>
-      </section>
     </section>
 
+    <section class="arm-panel" aria-label="arm control">
+      <div id="arm-status" class="arm-status"><span id="arm-word">停</span><span class="arm-symbol"></span></div>
+      <div class="height-stage" aria-label="height object">
+        <div class="height-base"></div>
+        <div id="height-column" class="height-column"></div>
+      </div>
+    </section>
+
+    <section class="video-panel" aria-label="rtsp video">
+      <div class="video-frame">
+        <img id="video" alt="头盔视频画面" src="/video.mjpeg">
+        <div class="video-empty" id="video-empty">
+          <strong>等待视频画面</strong>
+          <span id="video-url">等待 RTSP 地址</span>
+        </div>
+      </div>
+    </section>
   </main>
   <script src="/app.js" type="module"></script>
 </body>

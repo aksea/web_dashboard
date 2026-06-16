@@ -1,6 +1,12 @@
-# Intent Behavior Dashboard
+# Cursor Arm Dashboard
 
-独立的本地 Node.js 展示界面，用于演示和调试人的行为、环境、意图识别结果。页面会显示视频画面、设备注册状态、Owner、行为、环境和意图。
+本地 Web 展示端，用于接收板端 Zenoh 手势识别结果、戒指点击事件，并显示头盔 RTSP 视频。
+
+当前界面布局：
+
+- 顶部二分之一：光标控制区域，背景图来自 `public/assets/cursor-board.png`
+- 左下四分之一：机械臂控制，显示 `上` / `下` / `停` 和柱子高度
+- 右下四分之一：RTSP 视频画面
 
 ## 运行环境
 
@@ -24,21 +30,14 @@ python3 -m pip show eclipse-zenoh
 python3 -m pip install eclipse-zenoh
 ```
 
-## 启动展示端
-
-进入项目目录：
+## 启动
 
 ```bash
 cd web_dashboard
+npm start -- --rtsp-url rtsp://172.20.10.3:8554/cam
 ```
 
-启动服务：
-
-```bash
-npm start
-```
-
-打开浏览器：
+打开：
 
 ```text
 http://127.0.0.1:8787/
@@ -48,9 +47,21 @@ http://127.0.0.1:8787/
 
 - 启动 Web 服务，监听 `127.0.0.1:8787`
 - 启动 Zenoh router，监听 `tcp/0.0.0.0:7447`
-- 订阅注册、Mediapipe、YOLO 三类 Zenoh 数据
-- 从注册消息里的 `metadata.video_stream_url` 读取视频地址
-- 用 `ffmpeg` 在本机拉流并转成浏览器可显示的 `/video.mjpeg`
+- 订阅 Mediapipe 手势数据：`halmet/mediapipe`
+- 订阅戒指事件：`actor/ring/intent`
+- 订阅设备注册：`zho/entity/registry`
+- 用 `ffmpeg` 将 RTSP 转成浏览器可显示的 `/video.mjpeg`
+
+## 交互规则
+
+- `pointing`：使用食指指尖的 delta 控制顶部红点移动
+- `ok`：在红点当前位置打点
+- 戒指 `tap`：在红点当前位置打点
+- `pinch-out`：机械臂显示 `上`，柱子缓慢升高
+- `pinch-in`：机械臂显示 `下`，柱子缓慢下降
+- 其他手势或手势超时：机械臂显示 `停`，柱子停止
+
+板端负责完成 `pointing`、`ok`、`pinch-in`、`pinch-out` 的识别，前端只根据识别结果更新 UI。
 
 ## 板端配置
 
@@ -63,61 +74,18 @@ server_ip = "<展示端电脑IP>"
 server_port = 7447
 ```
 
-实体注册信息需要包含视频地址：
+如果使用设备注册消息提供视频地址，注册 metadata 需要包含：
 
 ```json
 {
   "action": "REG_REGISTER",
   "metadata": {
-    "owner": "operator_01",
     "video_stream_url": "rtsp://<board-ip>:8554/cam"
   }
 }
 ```
 
-板端运行时建议按顺序开启：
-
-1. 启动视频推流
-2. 注册实体
-3. 启动 Mediapipe / YOLO
-4. 发送识别结果
-
-收到 `REG_UNREGISTER` 后，页面会清空注册状态并停止显示视频画面。
-
-## 默认订阅
-
-```text
-注册状态：zho/entity/registry
-行为数据：halmet/mediapipe
-环境数据：halmet/yolo
-```
-
-Mediapipe 多手结果只展示 `id` 或 `hand_id` 为 `0` 的手。当前手势显示映射：
-
-```text
-open_palm -> 张开手掌
-fist      -> 握拳
-unknown   -> 未知动作
-```
-
-如果识别服务直接输出 `behavior`、`environment`、`intent` 字段，页面会优先展示这些字段。
-
-## 拼接视频标签
-
-如果视频是 4 路拼接流，页面默认按 2x2 顺序显示：
-
-```text
-左上：面部视角
-右上：第一视角
-左下：躯干视角
-右下：环境视角
-```
-
-需要覆盖标签时：
-
-```bash
-npm start -- --camera-labels 前方,左侧,右侧,后方
-```
+也可以启动时直接用 `--rtsp-url` 指定视频地址。
 
 ## 常用参数
 
@@ -130,8 +98,8 @@ npm start -- --camera-labels 前方,左侧,右侧,后方
 --listen tcp/0.0.0.0:7447
 --registry-key zho/entity/registry
 --mediapipe-key halmet/mediapipe
+--ring-key actor/ring/intent
 --yolo-key halmet/yolo
---camera-labels 面部视角,第一视角,躯干视角,环境视角
 --no-zenoh
 --no-video
 ```
@@ -142,31 +110,26 @@ npm start -- --camera-labels 前方,左侧,右侧,后方
 # 端口被占用时
 npm start -- --port 8799
 
-# 注册消息的视频地址不可用时，手动指定
-npm start -- --rtsp-url rtsp://<board-ip>:8554/cam
-
 # 只看页面，不连接板端
 npm start -- --no-zenoh --no-video
 ```
 
 ## 排查
 
-如果页面显示已注册但没有视频：
-
-1. 打开状态接口：
+状态接口：
 
 ```text
 http://127.0.0.1:8787/api/state
 ```
 
-2. 检查 `video.rtsp_url` 是否有值。
+如果没有视频，检查：
 
-3. 检查 `video.error`，这里会显示 ffmpeg 拉流错误。
+1. `video.rtsp_url` 是否为板端 RTSP 地址
+2. `video.status` 是否为 `online`
+3. `video.error` 是否有 ffmpeg 错误
 
-4. 在电脑上直接测试视频地址：
+电脑上可以直接测试 RTSP：
 
 ```bash
-ffmpeg -rtsp_transport tcp -i rtsp://<board-ip>:8554/cam -frames:v 1 -f null -
+ffmpeg -rtsp_transport tcp -i rtsp://172.20.10.3:8554/cam -frames:v 1 -f null -
 ```
-
-如果 8787 或 7447 被占用，停止旧服务，或用 `--port` / `--listen` 换端口。
