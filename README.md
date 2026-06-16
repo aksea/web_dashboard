@@ -34,7 +34,7 @@ python3 -m pip install eclipse-zenoh
 
 ```bash
 cd web_dashboard
-npm start -- --rtsp-url rtsp://172.20.10.3:8554/cam
+npm start -- --rtsp-url rtsp://192.168.8.69:8554/cam
 ```
 
 打开：
@@ -131,5 +131,5 @@ http://127.0.0.1:8787/api/state
 电脑上可以直接测试 RTSP：
 
 ```bash
-ffmpeg -rtsp_transport tcp -i rtsp://172.20.10.3:8554/cam -frames:v 1 -f null -
+ffmpeg -rtsp_transport tcp -i rtsp://192.168.8.69:8554/cam -frames:v 1 -f null -
 ```

@@ -27,7 +27,7 @@ function parseArgs(argv) {
   const args = {
     host: "127.0.0.1",
     port: 8787,
-    rtspUrl: "",
+    rtspUrl: "rtsp://192.168.8.69:8554/cam",
     rtspUrlOverridden: false,
     registryKey: "zho/entity/registry",
     mediapipeKey: "halmet/mediapipe",
@@ -92,7 +92,7 @@ function printHelp() {
 Options:
   --host 127.0.0.1                 HTTP bind host
   --port 8787                      HTTP bind port
-  --rtsp-url rtsp://host:8554/cam  RTSP source. If omitted, registry metadata is used.
+  --rtsp-url rtsp://host:8554/cam  RTSP source, default: rtsp://192.168.8.69:8554/cam.
   --zenoh-mode peer|client|router  Zenoh mode, default: router
   --connect tcp/HOST:7447          Zenoh endpoint, repeatable
   --listen tcp/0.0.0.0:7447        Zenoh listen endpoint, default: tcp/0.0.0.0:7447
