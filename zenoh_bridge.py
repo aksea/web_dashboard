@@ -26,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mediapipe-key", default="halmet/mediapipe")
     parser.add_argument("--ring-key", default="actor/ring/intent")
     parser.add_argument("--yolo-key", default="halmet/yolo")
+    parser.add_argument("--selection-key", default="actor/map/selected")
     parser.add_argument("--mode", default="peer", choices=("peer", "client", "router"))
     parser.add_argument("--connect", action="append", default=[])
     parser.add_argument("--listen", action="append", default=[])
@@ -83,6 +84,49 @@ def emit_status(status: str) -> None:
     )
 
 
+def emit_publish_result(key: str, payload: Any, status: str, error: str = "") -> None:
+    message = {
+        "kind": "published",
+        "key": key,
+        "payload": payload,
+        "status": status,
+        "received_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if error:
+        message["error"] = error
+    print(json.dumps(message, ensure_ascii=False), flush=True)
+
+
+def publish_from_stdin(session: Any, default_selection_key: str, stopped: threading.Event) -> None:
+    while not stopped.is_set():
+        line = sys.stdin.readline()
+        if not line:
+            time.sleep(0.05)
+            continue
+
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError as exc:
+            emit_publish_result("", {"raw": line}, "error", f"invalid json: {exc}")
+            continue
+
+        if message.get("op") != "publish":
+            continue
+
+        key = str(message.get("key") or default_selection_key)
+        payload = message.get("payload")
+        try:
+            text = json.dumps(payload, ensure_ascii=False)
+            session.put(key, text)
+            emit_publish_result(key, payload, "ok")
+        except Exception as exc:  # noqa: BLE001
+            emit_publish_result(key, payload, "error", str(exc))
+
+
 def main() -> int:
     args = parse_args()
     stopped = threading.Event()
@@ -100,12 +144,19 @@ def main() -> int:
         session.declare_subscriber(args.ring_key, lambda sample: emit("ring", sample)),
         session.declare_subscriber(args.yolo_key, lambda sample: emit("yolo", sample)),
     ]
+    publisher_thread = threading.Thread(
+        target=publish_from_stdin,
+        args=(session, args.selection_key, stopped),
+        daemon=True,
+    )
+    publisher_thread.start()
     emit_status("online")
 
     try:
         while not stopped.is_set():
             time.sleep(0.2)
     finally:
+        stopped.set()
         for subscriber in subscribers:
             subscriber.undeclare()
         session.close()

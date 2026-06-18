@@ -33,6 +33,7 @@ function parseArgs(argv) {
     mediapipeKey: "halmet/mediapipe",
     ringKey: "actor/ring/intent",
     yoloKey: "halmet/yolo",
+    selectionKey: "actor/map/selected",
     zenohMode: "router",
     connect: [],
     listen: ["tcp/0.0.0.0:7447"],
@@ -59,6 +60,7 @@ function parseArgs(argv) {
     else if (arg === "--mediapipe-key") args.mediapipeKey = next();
     else if (arg === "--ring-key") args.ringKey = next();
     else if (arg === "--yolo-key") args.yoloKey = next();
+    else if (arg === "--selection-key") args.selectionKey = next();
     else if (arg === "--zenoh-mode") args.zenohMode = next();
     else if (arg === "--connect") args.connect.push(next());
     else if (arg === "--listen") {
@@ -100,6 +102,7 @@ Options:
   --mediapipe-key halmet/mediapipe
   --ring-key actor/ring/intent
   --yolo-key halmet/yolo
+  --selection-key actor/map/selected
   --camera-labels 面部视角,第一视角,躯干视角,环境视角
   --no-zenoh                       Run UI without Zenoh subscription
   --no-video                       Run UI without RTSP transcoding
@@ -375,13 +378,14 @@ function startZenohBridge(args, dashboard) {
     "--mediapipe-key", args.mediapipeKey,
     "--ring-key", args.ringKey,
     "--yolo-key", args.yoloKey,
+    "--selection-key", args.selectionKey,
   ];
   for (const endpoint of args.connect) bridgeArgs.push("--connect", endpoint);
   for (const endpoint of args.listen) bridgeArgs.push("--listen", endpoint);
 
   const child = spawn(args.python, bridgeArgs, {
     cwd: __dirname,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
 
   dashboard.update((state) => {
@@ -430,6 +434,40 @@ function startZenohBridge(args, dashboard) {
   });
 
   return child;
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1024 * 1024) {
+        reject(new Error("request body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (error) {
+        reject(new Error(`invalid json body: ${error.message}`));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function publishSelection(zenohChild, selectionKey, payload) {
+  if (!zenohChild?.stdin || zenohChild.killed) {
+    throw new Error("zenoh bridge not running");
+  }
+  const message = {
+    op: "publish",
+    key: selectionKey,
+    payload,
+  };
+  zenohChild.stdin.write(`${JSON.stringify(message)}\n`);
 }
 
 class VideoRelay extends EventEmitter {
@@ -625,6 +663,24 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/state") return sendJson(res, dashboard.snapshot());
     if (url.pathname === "/events") return handleEvents(req, res, dashboard);
     if (url.pathname === "/video.mjpeg") return handleMjpeg(req, res, relay);
+    if (url.pathname === "/api/select-zone" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const zoneId = firstText(body.zone_id, body.selected);
+      if (!zoneId) {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "missing zone_id" }));
+        return;
+      }
+      const payload = {
+        selected: zoneId,
+        zone_id: zoneId,
+        source: "web_dashboard",
+        selected_at: nowText(),
+      };
+      publishSelection(zenohChild, args.selectionKey, payload);
+      sendJson(res, { ok: true, topic: args.selectionKey, payload });
+      return;
+    }
     return await serveStatic(req, res);
   } catch (error) {
     console.error(error);
@@ -639,6 +695,7 @@ server.listen(args.port, args.host, () => {
   console.log(`mediapipe: ${args.mediapipeKey}`);
   console.log(`ring:      ${args.ringKey}`);
   console.log(`yolo:      ${args.yoloKey}`);
+  console.log(`selected:  ${args.selectionKey}`);
   if (args.rtspUrl) console.log(`rtsp:      ${args.rtspUrl}`);
 });
 
