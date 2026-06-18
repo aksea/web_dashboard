@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const publicDir = path.join(__dirname, "public");
+const DEFAULT_RTSP_URL = "rtsp://172.20.10.3:8554/cam";
+const FIXED_ENVIRONMENT_LABEL = "人-机器狗协同场景";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -27,9 +29,8 @@ function parseArgs(argv) {
   const args = {
     host: "127.0.0.1",
     port: 8787,
-    rtspUrl: "rtsp://192.168.8.69:8554/cam",
+    rtspUrl: DEFAULT_RTSP_URL,
     rtspUrlOverridden: false,
-    registryKey: "zho/entity/registry",
     mediapipeKey: "halmet/mediapipe",
     ringKey: "actor/ring/intent",
     yoloKey: "halmet/yolo",
@@ -39,7 +40,7 @@ function parseArgs(argv) {
     listen: ["tcp/0.0.0.0:7447"],
     noZenoh: false,
     noVideo: false,
-    cameraLabels: ["面部视角", "第一视角", "躯干视角", "环境视角"],
+    cameraLabels: ["躯干视角", "第一视角", "面部视角", "环境视角"],
     ffmpeg: "ffmpeg",
     python: "python3",
   };
@@ -56,7 +57,7 @@ function parseArgs(argv) {
       args.rtspUrl = next();
       rtspUrlOverridden = true;
     }
-    else if (arg === "--registry-key") args.registryKey = next();
+    else if (arg === "--registry-key") next();
     else if (arg === "--mediapipe-key") args.mediapipeKey = next();
     else if (arg === "--ring-key") args.ringKey = next();
     else if (arg === "--yolo-key") args.yoloKey = next();
@@ -94,16 +95,15 @@ function printHelp() {
 Options:
   --host 127.0.0.1                 HTTP bind host
   --port 8787                      HTTP bind port
-  --rtsp-url rtsp://host:8554/cam  RTSP source, default: rtsp://192.168.8.69:8554/cam.
+  --rtsp-url rtsp://host:8554/cam  RTSP source, default: ${DEFAULT_RTSP_URL || "(none)"}.
   --zenoh-mode peer|client|router  Zenoh mode, default: router
   --connect tcp/HOST:7447          Zenoh endpoint, repeatable
   --listen tcp/0.0.0.0:7447        Zenoh listen endpoint, default: tcp/0.0.0.0:7447
-  --registry-key zho/entity/registry
   --mediapipe-key halmet/mediapipe
   --ring-key actor/ring/intent
   --yolo-key halmet/yolo
   --selection-key actor/map/selected
-  --camera-labels 面部视角,第一视角,躯干视角,环境视角
+  --camera-labels 躯干视角,第一视角,面部视角,环境视角
   --no-zenoh                       Run UI without Zenoh subscription
   --no-video                       Run UI without RTSP transcoding
 `);
@@ -117,24 +117,20 @@ function emptyState(args) {
   return {
     connection: {
       zenoh: args.noZenoh ? "disabled" : "starting",
-      video: args.noVideo ? "disabled" : "waiting",
+      video: args.noVideo ? "disabled" : args.rtspUrl ? "waiting" : "no_target",
       updated_at: nowText(),
-    },
-    registry: {
-      registered: false,
-      metadata: {},
     },
     video: {
       rtsp_url: args.rtspUrl || "",
       stream_url: "/video.mjpeg",
-      status: args.noVideo ? "disabled" : "waiting",
+      status: args.noVideo ? "disabled" : args.rtspUrl ? "waiting" : "no_target",
       camera_labels: args.cameraLabels,
       last_frame_at: "",
-      error: "",
+      error: args.rtspUrl ? "" : "当前无 RTSP 目标地址",
     },
     recognition: {
       behavior: { label: "等待数据", confidence: null, source: "mediapipe", updated_at: "" },
-      environment: { label: "等待数据", confidence: null, source: "yolo", updated_at: "" },
+      environment: { label: FIXED_ENVIRONMENT_LABEL, confidence: null, source: "rule", updated_at: nowText() },
       intent: { label: "等待判断", confidence: null, source: "rule", updated_at: "" },
       camera_id: "",
       pts_ns: null,
@@ -194,46 +190,29 @@ function translateBehavior(value) {
   const map = {
     open_palm: "张开手掌",
     fist: "握拳",
+    up: "握拳上抬",
+    down: "拇指收拢张掌",
+    pointing: "指向",
+    ok: "确认标记",
     unknown: "未知动作",
   };
   return map[text] ?? text;
 }
 
-function classifyIntent(behavior, environment) {
-  const value = behavior.toLowerCase();
-  if (value.includes("open_palm") || value.includes("张开手掌")) return "张开手掌，可能在示意停止或请求关注";
-  if (value.includes("fist") || value.includes("握拳")) return "握拳动作，可能表示确认或抓握意图";
-  if (value.includes("point")) return "指向动作，可能在提示方向或目标";
-  if (environment && environment !== "未检测到目标" && environment !== "等待数据") {
-    return "结合环境目标，等待进一步意图判断";
-  }
-  return "暂无明确意图";
-}
+function classifyIntent(gesture, behavior, environment) {
+  const rawGesture = firstText(gesture).toLowerCase();
+  if (rawGesture === "up") return "控制机械臂向上";
+  if (rawGesture === "down") return "控制机械臂向下";
+  if (rawGesture === "pointing") return "控制光标";
+  if (rawGesture === "ok") return "标记地点";
 
-function applyRegistry(dashboard, key, payload) {
-  dashboard.update((state) => {
-    const registered = payload.action === "REG_REGISTER";
-    const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
-    state.registry = {
-      registered,
-      action: payload.action,
-      entity_id: payload.entity_id ?? "",
-      display_name: registered ? payload.display_name ?? "" : "",
-      metadata: registered ? metadata : {},
-      updated_at: nowText(),
-    };
-    if (registered && metadata.video_stream_url && !dashboard.args.rtspUrlOverridden) {
-      state.video.rtsp_url = metadata.video_stream_url;
-    } else if (!registered) {
-      state.video.rtsp_url = "";
-      state.video.status = "waiting";
-      state.video.last_frame_at = "";
-      state.video.error = "";
-      state.connection.video = "waiting";
-      state.video.stop_requested_at = Date.now();
-    }
-    state.raw.last_message = { key, payload, received_at: nowText() };
-  });
+  const value = behavior.toLowerCase();
+  if (value.includes("上")) return "控制机械臂向上";
+  if (value.includes("下")) return "控制机械臂向下";
+  if (value.includes("指向")) return "控制光标";
+  if (value.includes("标记") || value.includes("确认")) return "标记地点";
+  if (environment && environment !== "等待数据") return "等待进一步意图判断";
+  return "暂无明确意图";
 }
 
 function applyMediapipe(dashboard, key, payload) {
@@ -242,6 +221,7 @@ function applyMediapipe(dashboard, key, payload) {
   const gesture = primaryHand ? firstText(primaryHand.gesture, primaryHand.behavior, primaryHand.action) : "";
   const handConfidence = primaryHand ? scoreFrom(primaryHand.gesture_score ?? primaryHand.score ?? primaryHand.confidence) : null;
   const behavior = translateBehavior(firstText(payload.behavior, payload.action, gesture, primaryHand ? "检测到手部动作" : "未检测到动作"));
+  const environment = FIXED_ENVIRONMENT_LABEL;
 
   dashboard.update((state) => {
     state.recognition.behavior = {
@@ -250,16 +230,14 @@ function applyMediapipe(dashboard, key, payload) {
       source: "mediapipe",
       updated_at: nowText(),
     };
-    if (payload.environment || payload.scene) {
-      state.recognition.environment = {
-        label: firstText(payload.environment, payload.scene),
-        confidence: scoreFrom(payload.environment_confidence ?? payload.confidence),
-        source: "mediapipe",
-        updated_at: nowText(),
-      };
-    }
+    state.recognition.environment = {
+      label: environment,
+      confidence: scoreFrom(payload.environment_confidence ?? payload.confidence),
+      source: "rule",
+      updated_at: nowText(),
+    };
     state.recognition.intent = {
-      label: firstText(payload.intent, classifyIntent(behavior, state.recognition.environment.label)),
+      label: firstText(payload.intent, classifyIntent(gesture, behavior, environment)),
       confidence: scoreFrom(payload.intent_confidence ?? payload.confidence) ?? handConfidence,
       source: payload.intent ? "zenoh" : "rule",
       updated_at: nowText(),
@@ -306,13 +284,13 @@ function applyYolo(dashboard, key, payload) {
     const score = scoreFrom(item.score ?? item.confidence);
     return score === null ? best : Math.max(best ?? 0, score);
   }, null);
-  const environment = firstText(payload.environment, payload.scene, formatObjects(objects));
+  const environment = FIXED_ENVIRONMENT_LABEL;
 
   dashboard.update((state) => {
     state.recognition.environment = {
       label: environment,
-      confidence: scoreFrom(payload.confidence) ?? bestScore,
-      source: "yolo",
+      confidence: scoreFrom(payload.environment_confidence ?? payload.confidence) ?? bestScore,
+      source: "rule",
       updated_at: nowText(),
     };
     if (payload.intent) {
@@ -324,7 +302,7 @@ function applyYolo(dashboard, key, payload) {
       };
     } else if (!state.raw.mediapipe) {
       state.recognition.intent = {
-        label: classifyIntent(state.recognition.behavior.label, environment),
+        label: classifyIntent("", state.recognition.behavior.label, environment),
         confidence: bestScore,
         source: "rule",
         updated_at: nowText(),
@@ -374,7 +352,6 @@ function startZenohBridge(args, dashboard) {
   const bridgeArgs = [
     bridge,
     "--mode", args.zenohMode,
-    "--registry-key", args.registryKey,
     "--mediapipe-key", args.mediapipeKey,
     "--ring-key", args.ringKey,
     "--yolo-key", args.yoloKey,
@@ -411,8 +388,7 @@ function startZenohBridge(args, dashboard) {
           dashboard.update((state) => {
             state.connection.zenoh = message.status ?? "online";
           });
-        } else if (message.kind === "registry") applyRegistry(dashboard, message.key, message.payload);
-        else if (message.kind === "mediapipe") applyMediapipe(dashboard, message.key, message.payload);
+        } else if (message.kind === "mediapipe") applyMediapipe(dashboard, message.key, message.payload);
         else if (message.kind === "ring") applyRingIntent(dashboard, message.key, message.payload);
         else if (message.kind === "yolo") applyYolo(dashboard, message.key, message.payload);
         else applyGenericResult(dashboard, message.key, message.payload);
@@ -650,11 +626,14 @@ if (args.rtspUrl) {
 }
 
 dashboard.on("update", (state) => {
-  if (!state.video.rtsp_url) {
+  if (!args.rtspUrl) {
+    state.video.status = args.noVideo ? "disabled" : "no_target";
+    state.video.error = args.noVideo ? "" : "当前无 RTSP 目标地址";
+    state.connection.video = args.noVideo ? "disabled" : "no_target";
     relay.stop();
     return;
   }
-  relay.ensureStarted(state.video.rtsp_url);
+  relay.ensureStarted(args.rtspUrl);
 });
 
 const server = http.createServer(async (req, res) => {
@@ -691,12 +670,11 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(args.port, args.host, () => {
   console.log(`dashboard: http://${args.host}:${args.port}/`);
-  console.log(`registry:  ${args.registryKey}`);
   console.log(`mediapipe: ${args.mediapipeKey}`);
   console.log(`ring:      ${args.ringKey}`);
   console.log(`yolo:      ${args.yoloKey}`);
   console.log(`selected:  ${args.selectionKey}`);
-  if (args.rtspUrl) console.log(`rtsp:      ${args.rtspUrl}`);
+  console.log(`rtsp:      ${args.rtspUrl || "(none)"}`);
 });
 
 function shutdown() {

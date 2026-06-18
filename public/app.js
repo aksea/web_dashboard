@@ -1,17 +1,21 @@
 const $ = (id) => document.getElementById(id);
 
 const fields = {
+  clock: $("clock"),
+  zenohDot: $("zenoh-dot"),
+  zenohStatus: $("zenoh-status"),
+  behavior: $("behavior"),
+  environment: $("environment"),
+  intent: $("intent"),
   cursorSurface: $("cursor-surface"),
   sceneMap: $("scene-map"),
   cursorTarget: $("cursor-target"),
   tapMarker: $("tap-marker"),
-  armStatus: $("arm-status"),
-  armWord: $("arm-word"),
-  heightStage: document.querySelector(".height-stage"),
-  heightColumn: $("height-column"),
   video: $("video"),
+  videoPill: $("video-pill"),
   videoEmpty: $("video-empty"),
   videoUrl: $("video-url"),
+  cameraLabels: $("camera-labels"),
 };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -25,6 +29,7 @@ const state = {
   cursor: {
     initialized: false,
     lastIndex: null,
+    lastActiveAt: 0,
     x: 0.5,
     y: 0.5,
   },
@@ -34,23 +39,78 @@ const state = {
     zones: [],
     zoneLabels: new Map(),
   },
-  height: {
-    value: 0.15,
-    direction: 0,
-    lastTick: performance.now(),
-  },
 };
+
+let renderedCameraLabels = "";
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function setArmState(direction) {
-  state.height.direction = direction;
-  const label = direction > 0 ? "上" : direction < 0 ? "下" : "停";
-  fields.armWord.textContent = label;
-  fields.armStatus.classList.toggle("up", direction > 0);
-  fields.armStatus.classList.toggle("down", direction < 0);
+function text(value, fallback = "-") {
+  return value === undefined || value === null || value === "" ? fallback : String(value);
+}
+
+function statusText(value) {
+  const map = {
+    online: "在线",
+    starting: "启动中",
+    waiting: "等待",
+    connecting: "连接中",
+    disabled: "已禁用",
+    no_target: "无目标",
+    offline: "离线",
+  };
+  return map[value] ?? text(value, "未知");
+}
+
+function setPill(element, label, variant) {
+  element.textContent = label;
+  element.className = `pill ${variant ?? ""}`.trim();
+}
+
+function renderCameraLabels(labels = []) {
+  const nextLabels = labels.slice(0, 4);
+  const key = JSON.stringify(nextLabels);
+  if (key === renderedCameraLabels) return;
+  renderedCameraLabels = key;
+  fields.cameraLabels.replaceChildren(
+    ...nextLabels.map((label, index) => {
+      const item = document.createElement("span");
+      item.className = `camera-label label-${index + 1}`;
+      item.textContent = text(label, `画面 ${index + 1}`);
+      return item;
+    }),
+  );
+}
+
+function positionCameraLabels() {
+  const frame = fields.video.parentElement;
+  const frameWidth = frame.clientWidth;
+  const frameHeight = frame.clientHeight;
+  let left = 0;
+  let top = 0;
+  let width = frameWidth;
+  let height = frameHeight;
+
+  if (fields.video.naturalWidth > 0 && fields.video.naturalHeight > 0 && frameWidth > 0 && frameHeight > 0) {
+    const imageRatio = fields.video.naturalWidth / fields.video.naturalHeight;
+    const frameRatio = frameWidth / frameHeight;
+    if (frameRatio > imageRatio) {
+      width = frameWidth;
+      height = width / imageRatio;
+      top = (frameHeight - height) / 2;
+    } else {
+      height = frameHeight;
+      width = height * imageRatio;
+      left = (frameWidth - width) / 2;
+    }
+  }
+
+  fields.cameraLabels.style.left = `${left}px`;
+  fields.cameraLabels.style.top = `${top}px`;
+  fields.cameraLabels.style.width = `${width}px`;
+  fields.cameraLabels.style.height = `${height}px`;
 }
 
 function svgElement(name, attrs = {}) {
@@ -289,6 +349,39 @@ function zoneLabelPoint(zone) {
   };
 }
 
+function zoneVisualTuning(zoneId) {
+  const map = {
+    zone_01: { shapeDx: -380, shapeDy: -260, labelDx: 540, labelDy: -20, anchor: "start" },
+    zone_02: { shapeDx: -180, shapeDy: 420, labelDx: 460, labelDy: -20, anchor: "start" },
+    zone_03: { shapeDx: 420, shapeDy: -220, labelDx: -620, labelDy: 0, anchor: "end" },
+    zone_08: { shapeDx: -620, shapeDy: 0, labelDx: 470, labelDy: 20, anchor: "start" },
+    zone_09: { labelDx: -440, labelDy: 0, anchor: "end" },
+    zone_10: { shapeDx: 160, shapeDy: -320, labelDx: 0, labelDy: -560, anchor: "middle" },
+    zone_11: { shapeDx: 160, shapeDy: 320, labelDx: 0, labelDy: 560, anchor: "middle" },
+    zone_12: { shapeDx: 520, shapeDy: 0, labelDx: 0, labelDy: 0, anchor: "middle" },
+  };
+  return map[zoneId] || {};
+}
+
+function zoneVisualCenter(zone, zoneId) {
+  if (!zone.center) return null;
+  const tuning = zoneVisualTuning(zoneId);
+  return {
+    x: Number(zone.center.x) + (tuning.shapeDx || 0),
+    y: Number(zone.center.y) + (tuning.shapeDy || 0),
+  };
+}
+
+function labelAnchorForZone(zone, zoneId) {
+  const point = zone.center ? zoneVisualCenter(zone, zoneId) : zoneLabelPoint(zone);
+  if (!point) return null;
+  const tuning = zoneVisualTuning(zoneId);
+  return {
+    x: point.x + (tuning.labelDx || 0),
+    y: point.y + (tuning.labelDy || 0),
+  };
+}
+
 function addMapGrid(svg, bounds) {
   const step = 5000;
   const startX = Math.ceil(bounds.minX / step) * step;
@@ -324,8 +417,13 @@ function renderZones(svg, scene, floor, bounds) {
     if (!zoneOnActiveFloor(zone, floor)) continue;
     const zoneId = zone.id || zone.display_name || zone.label;
     if (!zoneId) continue;
+    const tuning = zoneVisualTuning(zoneId);
     if (Array.isArray(zone.boundary_2d) && zone.boundary_2d.length >= 3) {
-      const points = toMapPoints(zone.boundary_2d, bounds);
+      const visualBoundary = zone.boundary_2d.map((point) => ({
+        x: Number(point.x) + (tuning.shapeDx || 0),
+        y: Number(point.y) + (tuning.shapeDy || 0),
+      }));
+      const points = toMapPoints(visualBoundary, bounds);
       svg.appendChild(svgElement("polygon", {
         class: "map-zone",
         points: pointString(points),
@@ -333,25 +431,29 @@ function renderZones(svg, scene, floor, bounds) {
       }));
       state.sceneMap.zones.push({ id: zoneId, shape: "polygon", points });
     } else if (zone.center && zone.radius) {
-      const center = toMapPoint(zone.center.x, zone.center.y, bounds);
+      const visualCenter = zoneVisualCenter(zone, zoneId);
+      const center = toMapPoint(visualCenter.x, visualCenter.y, bounds);
+      const radius = Number(zone.radius);
       svg.appendChild(svgElement("circle", {
         class: "map-zone",
         cx: center.x,
         cy: center.y,
-        r: Number(zone.radius),
+        r: radius,
         "data-zone-id": zoneId,
       }));
-      state.sceneMap.zones.push({ id: zoneId, shape: "circle", center, radius: Number(zone.radius) });
+      state.sceneMap.zones.push({ id: zoneId, shape: "circle", center, radius });
     }
 
-    const labelPoint = zoneLabelPoint(zone);
+    const labelPoint = labelAnchorForZone(zone, zoneId);
     if (!labelPoint) continue;
     const anchor = toMapPoint(labelPoint.x, labelPoint.y, bounds);
     const label = zone.label || zone.display_name || zone.id || "";
+    const anchorName = tuning.anchor || "middle";
     const labelNode = svgElement("text", {
       class: "map-zone-label",
       x: anchor.x,
       y: anchor.y,
+      "text-anchor": anchorName,
     });
     labelNode.textContent = label;
     svg.appendChild(labelNode);
@@ -397,11 +499,19 @@ function renderContainers(svg, scene, floor, bounds) {
   }
 }
 
+function targetVisualPosition(target) {
+  if (target.target_id === "bomb_1") {
+    return { x: -5000, y: -1960, z: target.position?.z ?? 575 };
+  }
+  return target.position;
+}
+
 function renderTargets(svg, scene, floor, bounds) {
   for (const target of scene.targets || []) {
-    if (!target.position || target.visibility && target.visibility !== "god_view") continue;
-    if (!zInFloor(target.position.z, floor)) continue;
-    const point = toMapPoint(target.position.x, target.position.y, bounds);
+    const position = targetVisualPosition(target);
+    if (!position || target.visibility && target.visibility !== "god_view") continue;
+    if (!zInFloor(position.z, floor)) continue;
+    const point = toMapPoint(position.x, position.y, bounds);
     const size = 260;
     svg.appendChild(svgElement("polygon", {
       class: "map-target",
@@ -457,11 +567,11 @@ function updateCursor(points, width, height, gesture) {
   const indexTip = points[8];
   const active = gesture === "pointing";
   if (!active) {
-    state.cursor.lastIndex = null;
     return;
   }
 
   const gain = 5.0;
+  const now = performance.now();
   const current = {
     x: clamp(Number(indexTip[0]) / width, 0, 1),
     y: clamp(Number(indexTip[1]) / height, 0, 1),
@@ -471,11 +581,21 @@ function updateCursor(points, width, height, gesture) {
     state.cursor.y = 0.5;
     state.cursor.initialized = true;
   }
+
   if (state.cursor.lastIndex) {
-    state.cursor.x = clamp(state.cursor.x + (current.x - state.cursor.lastIndex.x) * gain, 0, 1);
-    state.cursor.y = clamp(state.cursor.y + (current.y - state.cursor.lastIndex.y) * gain, 0, 1);
+    const inactiveMs = now - state.cursor.lastActiveAt;
+    const dx = current.x - state.cursor.lastIndex.x;
+    const dy = current.y - state.cursor.lastIndex.y;
+    const jump = Math.hypot(dx, dy);
+    const shouldRebase = inactiveMs > 250 || jump > 0.12;
+    if (!shouldRebase) {
+      const maxStep = 0.045;
+      state.cursor.x = clamp(state.cursor.x + clamp(dx * gain, -maxStep, maxStep), 0, 1);
+      state.cursor.y = clamp(state.cursor.y + clamp(dy * gain, -maxStep, maxStep), 0, 1);
+    }
   }
   state.cursor.lastIndex = current;
+  state.cursor.lastActiveAt = now;
 
   const bounds = fields.cursorSurface.getBoundingClientRect();
   fields.cursorTarget.style.left = `${state.cursor.x * bounds.width}px`;
@@ -491,12 +611,6 @@ function placeTapMarker() {
   fields.tapMarker.classList.add("visible");
 }
 
-function updateArm(gesture) {
-  if (gesture === "pinch-in") setArmState(-1);
-  else if (gesture === "pinch-out") setArmState(1);
-  else setArmState(0);
-}
-
 function renderHand(hand) {
   const points = hand?.landmarks || [];
   if (points.length < 21) return;
@@ -506,7 +620,6 @@ function renderHand(hand) {
   const gesture = hand.gesture || "";
 
   updateCursor(points, width, height, gesture);
-  updateArm(gesture);
   if (gesture === "ok" && state.lastGesture !== "ok") {
     const zoneId = markActiveZoneFromCursor();
     if (zoneId) {
@@ -529,24 +642,24 @@ function handToken(hand) {
   ].join("|");
 }
 
-function renderHeight(deltaMs) {
-  const speedPerSecond = 0.24;
-  if (state.height.direction !== 0) {
-    state.height.value = clamp(
-      state.height.value + state.height.direction * speedPerSecond * (deltaMs / 1000),
-      0,
-      1,
-    );
-  }
-  const stageHeight = Math.max(fields.heightStage.getBoundingClientRect().height, 80);
-  const columnHeight = 36 + state.height.value * Math.max(stageHeight - 96, 1);
-  fields.heightColumn.style.height = `${columnHeight}px`;
-}
-
 function renderVideo(videoState) {
   const status = videoState?.status ?? "waiting";
-  fields.videoEmpty.classList.toggle("hidden", status === "online");
-  fields.videoUrl.textContent = videoState?.rtsp_url || "等待 RTSP 地址";
+  const videoOnline = status === "online";
+  setPill(fields.videoPill, statusText(status), videoOnline ? "good" : status === "offline" ? "bad" : "");
+  fields.videoEmpty.classList.toggle("hidden", videoOnline);
+  fields.videoUrl.textContent = text(videoState?.rtsp_url, "当前无 RTSP 目标地址");
+  renderCameraLabels(videoOnline ? videoState?.camera_labels : []);
+  requestAnimationFrame(positionCameraLabels);
+}
+
+function renderDashboard(snapshot) {
+  const zenohOnline = snapshot.connection?.zenoh === "online" || snapshot.connection?.zenoh === "disabled";
+  fields.zenohDot.classList.toggle("online", zenohOnline);
+  fields.zenohStatus.textContent = `Zenoh ${statusText(snapshot.connection?.zenoh)}`;
+
+  fields.behavior.textContent = text(snapshot.recognition?.behavior?.label, "等待数据");
+  fields.environment.textContent = text(snapshot.recognition?.environment?.label, "等待数据");
+  fields.intent.textContent = text(snapshot.recognition?.intent?.label, "等待判断");
 }
 
 function primaryHandFrom(rawMediapipe) {
@@ -555,6 +668,8 @@ function primaryHandFrom(rawMediapipe) {
 }
 
 function render(snapshot) {
+  renderDashboard(snapshot);
+
   const hand = snapshot.hand ?? primaryHandFrom(snapshot.raw?.mediapipe);
   if (hand) {
     const token = handToken(hand);
@@ -573,16 +688,8 @@ function render(snapshot) {
   renderVideo(snapshot.video);
 }
 
-function animate() {
-  const now = performance.now();
-  const deltaMs = Math.min(now - state.height.lastTick, 100);
-  state.height.lastTick = now;
-
-  if (state.lastSeen && Date.now() - state.lastSeen >= 1500) {
-    setArmState(0);
-  }
-  renderHeight(deltaMs);
-  requestAnimationFrame(animate);
+function tickClock() {
+  fields.clock.textContent = new Date().toLocaleString("zh-CN", { hour12: false });
 }
 
 async function loadInitialState() {
@@ -593,14 +700,20 @@ async function loadInitialState() {
 function connectEvents() {
   const events = new EventSource("/events");
   events.onmessage = (event) => render(JSON.parse(event.data));
+  events.onerror = () => {
+    fields.zenohDot.classList.remove("online");
+    fields.zenohStatus.textContent = "服务重连中";
+  };
 }
 
 fields.video.addEventListener("error", () => {
   fields.videoEmpty.classList.remove("hidden");
 });
 
-setArmState(0);
+tickClock();
+setInterval(tickClock, 1000);
+new ResizeObserver(positionCameraLabels).observe(fields.video.parentElement);
+fields.video.addEventListener("load", positionCameraLabels);
 loadSceneMap().catch(console.error);
 loadInitialState().catch(console.error);
 connectEvents();
-animate();

@@ -49,7 +49,6 @@ http://127.0.0.1:8787/
 - 启动 Zenoh router，监听 `tcp/0.0.0.0:7447`
 - 订阅 Mediapipe 手势数据：`halmet/mediapipe`
 - 订阅戒指事件：`actor/ring/intent`
-- 订阅设备注册：`zho/entity/registry`
 - 用 `ffmpeg` 将 RTSP 转成浏览器可显示的 `/video.mjpeg`
 
 ## 交互规则
@@ -57,11 +56,10 @@ http://127.0.0.1:8787/
 - `pointing`：使用食指指尖的 delta 控制顶部红点移动
 - `ok`：在红点当前位置打点
 - 戒指 `tap`：在红点当前位置打点
-- `pinch-out`：机械臂显示 `上`，柱子缓慢升高
-- `pinch-in`：机械臂显示 `下`，柱子缓慢下降
-- 其他手势或手势超时：机械臂显示 `停`，柱子停止
+- `up`：识别为控制机械臂向上
+- `down`：识别为控制机械臂向下
 
-板端负责完成 `pointing`、`ok`、`pinch-in`、`pinch-out` 的识别，前端只根据识别结果更新 UI。
+板端负责完成 `pointing`、`ok`、`up`、`down` 的识别，前端只根据识别结果更新 UI。
 
 ## 板端配置
 
@@ -74,18 +72,7 @@ server_ip = "<展示端电脑IP>"
 server_port = 7447
 ```
 
-如果使用设备注册消息提供视频地址，注册 metadata 需要包含：
-
-```json
-{
-  "action": "REG_REGISTER",
-  "metadata": {
-    "video_stream_url": "rtsp://<board-ip>:8554/cam"
-  }
-}
-```
-
-也可以启动时直接用 `--rtsp-url` 指定视频地址。
+RTSP 地址只来自启动参数或代码里的默认值。启动时传 `--rtsp-url` 会覆盖默认值；如果代码里没有默认值且启动时也没有传地址，页面会显示“当前无 RTSP 目标地址”。
 
 ## 常用参数
 
@@ -96,7 +83,6 @@ server_port = 7447
 --zenoh-mode peer|client|router
 --connect tcp/<host>:7447
 --listen tcp/0.0.0.0:7447
---registry-key zho/entity/registry
 --mediapipe-key halmet/mediapipe
 --ring-key actor/ring/intent
 --yolo-key halmet/yolo
